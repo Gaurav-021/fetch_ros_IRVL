@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import socket
 import struct
-from threading import Thread, Lock
+from threading import Thread
 import rospy
 from geometry_msgs.msg import WrenchStamped
 import time
@@ -92,7 +92,7 @@ class Sensor:
 			- ty -> -tx
 			- tz -> -ty
 		'''
-		#! Missing transformation from step count to force and torque value
+		
 		msg = WrenchStamped()
 		msg.header.stamp = rospy.Time.now()
 		msg.header.frame_id = "ati_link"  

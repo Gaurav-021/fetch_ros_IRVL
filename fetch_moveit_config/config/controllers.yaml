@@ -11,6 +11,7 @@ controller_list:
       - forearm_roll_joint
       - wrist_flex_joint
       - wrist_roll_joint
+      
   - name: arm_with_torso_controller
     action_ns: follow_joint_trajectory
     type: FollowJointTrajectory
