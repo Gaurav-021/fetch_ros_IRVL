@@ -7,6 +7,9 @@ import threading
 import time
 import actionlib
 from control_msgs.msg import GripperCommandAction, GripperCommandGoal
+import sys
+import tty
+import termios
 
 class ArmTeleop:
     def __init__(self):
@@ -18,16 +21,16 @@ class ArmTeleop:
             'x': rospy.get_param('~axis_x', {'up': 'w', 'down': 's'}),
             'y': rospy.get_param('~axis_y', {'left': 'a', 'right': 'd'}),
             'z': rospy.get_param('~axis_z', {'up': 'q', 'down': 'e'}),
-            'roll': rospy.get_param('~axis_roll', {'ccw': 'y', 'cw': 'i'}),
-            'pitch': rospy.get_param('~axis_pitch', {'up': 'u', 'down': 'j'}),
-            'yaw': rospy.get_param('~axis_yaw', {'left': 'h', 'right': 'k'})
+            'roll': rospy.get_param('~axis_roll', {'ccw': 'u', 'cw': 'o'}),
+            'pitch': rospy.get_param('~axis_pitch', {'up': 'i', 'down': 'k'}),
+            'yaw': rospy.get_param('~axis_yaw', {'left': 'j', 'right': 'l'})
         }
 
         self.emergency_stop_key = 'backspace'
         
-        # Speed levels
-        self.speed_levels = [0.2, 0.4, 0.6, 0.8, 1.0]
-        self.current_speed_level = 2
+        # Speed levels (expanded to 9)
+        self.speed_levels = [0.01, 0.025, 0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0]  # 20% to 100%
+        self.current_speed_level = 4  # Default to middle speed (60%)
         self.last_speed_change_time = time.time()
         self.debounce_interval = 0.2
 
@@ -68,6 +71,10 @@ class ArmTeleop:
         self.last = TwistStamped()
         self.last_command_time = rospy.Time.now()
         
+        # Store terminal settings to disable echo
+        self.old_settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())  # Disable line buffering and echo
+        
         # Start threads
         self.running = True
         self.keyboard_thread = threading.Thread(target=self.keyboard_loop)
@@ -86,10 +93,10 @@ class ArmTeleop:
     def update(self):
         self.desired = TwistStamped()
         
-        # Speed level check
+        # Speed level check (now 1-9)
         current_time = time.time()
         if current_time - self.last_speed_change_time >= self.debounce_interval:
-            for i in range(1, 6):
+            for i in range(1, 10):  # Changed to 1-9
                 if keyboard.is_pressed(str(i)):
                     self.current_speed_level = i - 1
                     rospy.loginfo(f"Speed level set to {i} ({self.speed_levels[self.current_speed_level]*100}%)")
@@ -188,6 +195,8 @@ class ArmTeleop:
     def stop(self):
         self.emergency_stop()
         self.running = False
+        # Restore terminal settings
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
 
 if __name__ == '__main__':
     try:
