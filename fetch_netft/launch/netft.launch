@@ -1,5 +1,25 @@
 <launch>
-    <!-- Launch the sensor node with a parameter for frequency -->
-    <node pkg="fetch_netft" type="sensor.py" name="ft_sensor" output="screen">
-    </node>
+    <!-- Argument for robot type, defaulting to "fetch" -->
+    <arg name="robot_type" default="fetch" doc="Type of robot: 'fetch' or 'fetch_UMI'"/>
+
+    <!-- Load gripper configuration based on robot_type -->
+    <group if="$(eval arg('robot_type') == 'fetch')">
+        <rosparam file="$(find fetch_netft)/config/gripper_config.yaml" command="load" ns="fetch" />
+        <node pkg="fetch_netft" type="sensor.py" name="ft_sensor" output="screen">
+            <rosparam subst_value="true">
+                gripper_mass: $(find fetch_netft)/config/gripper_config.yaml/fetch/gripper_mass
+                gripper_cog: $(find fetch_netft)/config/gripper_config.yaml/fetch/gripper_cog
+            </rosparam>
+        </node>
+    </group>
+
+    <group if="$(eval arg('robot_type') == 'fetch_UMI')">
+        <rosparam file="$(find fetch_netft)/config/gripper_config.yaml" command="load" ns="fetch_UMI" />
+        <node pkg="fetch_netft" type="sensor.py" name="ft_sensor" output="screen">
+            <rosparam subst_value="true">
+                gripper_mass: $(find fetch_netft)/config/gripper_config.yaml/fetch_UMI/gripper_mass
+                gripper_cog: $(find fetch_netft)/config/gripper_config.yaml/fetch_UMI/gripper_cog
+            </rosparam>
+        </node>
+    </group>
 </launch>

@@ -4,92 +4,89 @@ import struct
 from threading import Thread
 import rospy
 from geometry_msgs.msg import WrenchStamped
+from sensor_msgs.msg import Imu
 import time
 import tf
 from tf.transformations import quaternion_matrix
 import numpy as np
 
 class Sensor:
-    '''Class manager for ATI Force/Torque sensor via UDP/RDT with absolute force/torque computation.'''
+    '''Class manager for ATI Force/Torque sensor via UDP/RDT with absolute and external force/torque computation.'''
     def __init__(self, ip="10.42.42.41"):
-        '''
-        Args:
-            ip (str): The IP address of the Net F/T box.
-        '''
         # Initialization
         self.ip = ip
-        self.port = 49152  # UDP/RDT port
+        self.port = 49152
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.connect((ip, self.port))
         self.stream = False
-        self.cpf = 1000000.0  # Counts per Force (NetFT Configuration)
-        self.cpt = 1000000.0  # Counts per Torque (NetFT Configuration)
+        self.cpf = 1000000.0
+        self.cpt = 1000000.0
         
-        # Initialize ROS node
+        # ROS node and publishers
         rospy.init_node('ft_sensor', anonymous=True)
         self.pub_raw = rospy.Publisher('/gripper/ft_sensor/raw', WrenchStamped, queue_size=10)
         self.pub_absolute = rospy.Publisher('/gripper/ft_sensor/absolute', WrenchStamped, queue_size=10)
+        self.pub_external = rospy.Publisher('/gripper/ft_sensor/external', WrenchStamped, queue_size=10)
         self.data = None
 
-        # TF listener for pose
+        # TF listener
         self.tf_listener = tf.TransformListener()
         
-        # Gripper properties
-        self.gripper_mass = 1.5  # kg
-        self.gripper_pos = np.array([0.5, 0.0, 0.0])  # meters in ati_link frame
+        # Gripper properties from ROS parameters
+        self.gripper_mass = rospy.get_param('~gripper_mass', 1.5)  # Default to 1.5 kg
+        self.gripper_cog = np.array(rospy.get_param('~gripper_cog', [0.5, 0.0, 0.0]))  # Default to [0.5, 0, 0]
         self.gravity = 9.81  # m/s^2
 
-        # Reset NetFT software bias and capture pose
+        # Reset and capture bias
         self.send(0x0042)
         self.capture_initial_bias()
 
-        # Subscriber for raw FT data
-        self.sub_raw = rospy.Subscriber('/gripper/ft_sensor/raw', WrenchStamped, self.compensate_and_publish)
+        # Subscribers
+        self.sub_raw_absolute = rospy.Subscriber('/gripper/ft_sensor/raw', WrenchStamped, self.publish_absolute)
+        self.sub_raw_external = rospy.Subscriber('/gripper/ft_sensor/absolute', WrenchStamped, self.publish_external)
+        self.sub_imu = rospy.Subscriber('/gripper/imu', Imu, self.update_imu_data)
+        
+        # IMU data storage
+        self.latest_imu = None
+        self.imu_lock = Threading.Lock()
 
     def capture_initial_bias(self):
-        '''Capture the initial pose of ati_link and compute gripper bias after reset.'''
+        '''Capture initial pose and compute gripper bias after reset.'''
         try:
             self.tf_listener.waitForTransform("base_link", "ati_link", rospy.Time(0), rospy.Duration(2.0))
             (trans, rot) = self.tf_listener.lookupTransform("base_link", "ati_link", rospy.Time(0))
-            self.initial_rot = np.array(rot)  # Quaternion [x, y, z, w]
+            self.initial_rot = np.array(rot)
             rospy.loginfo("Captured initial pose of ati_link relative to base_link")
             
-            # Compute gripper bias at reset pose
             rot_matrix = quaternion_matrix(self.initial_rot)[:3, :3]
-            gravity_base = np.array([0.0, 0.0, -self.gripper_mass * self.gravity])  # [0, 0, -14.715] N
-            self.bias_force = rot_matrix.T.dot(gravity_base)  # Gravity in ati_link frame
-            self.bias_torque = np.cross(self.gripper_pos, self.bias_force)  # Torque in ati_link frame
-            # Replace f-string with .format()
+            gravity_base = np.array([0.0, 0.0, -self.gripper_mass * self.gravity])
+            self.bias_force = rot_matrix.T.dot(gravity_base)
+            self.bias_torque = np.cross(self.gripper_cog, self.bias_force)
             rospy.loginfo("Gripper bias - Force: {0}, Torque: {1}".format(self.bias_force, self.bias_torque))
         except (tf.Exception) as e:
-            # Replace f-string with % operator
             rospy.logerr("Failed to capture initial pose: %s" % e)
-            self.initial_rot = np.array([0.0, 0.0, 0.0, 1.0])  # Identity quaternion
+            self.initial_rot = np.array([0.0, 0.0, 0.0, 1.0])
             self.bias_force = np.array([0.0, 0.0, 0.0])
             self.bias_torque = np.array([0.0, 0.0, 0.0])
 
     def send(self, command, count=0):
-        '''Send a command to the NetFT using UDP/RDT.'''
         header = 0x1234
         message = struct.pack('!HHI', header, command, count)
         self.sock.send(message)
 
     def receive(self):
-        '''Receives and unpacks a response from the Net F/T box.'''
         rawdata = self.sock.recv(1024)
         data = struct.unpack('!IIIiiiiii', rawdata)[3:]
-        self.data = [data[i] for i in range(6)]  # Raw counts
+        self.data = [data[i] for i in range(6)]
         return 
 
     def receiveHandler(self):
-        '''A handler to receive and store data.'''
         while self.stream:
             self.receive()
             self.publish_to_ros()
 
     def startStreaming(self):
-        '''Start Data Stream'''
-        self.getMeasurements(0)  # Signals NetFT to stream
+        self.getMeasurements(0)
         rospy.loginfo("NetFT Stream Started")
         self.stream = True
         self.receiveThread = Thread(target=self.receiveHandler)
@@ -97,22 +94,17 @@ class Sensor:
         self.receiveThread.start()
 
     def getMeasurements(self, n):
-        '''Request measurements from NetFT'''
         self.send(2, count=n)
 
     def stopStreaming(self):
-        '''Stop NetFT streaming'''
         self.stream = False
         time.sleep(0.1)
-        self.send(0)  # Sends signal to NetFT to stop
+        self.send(0)
         
     def publish_to_ros(self):
-        '''Publish the current force and torque data to ROS topic /gripper/ft_sensor/raw.'''
         msg = WrenchStamped()
         msg.header.stamp = rospy.Time.now()
         msg.header.frame_id = "ati_link"
-        
-        # URDF to NetFT axis translation
         msg.wrench.force.x = self.data[2] / self.cpf
         msg.wrench.force.y = -1.0 * self.data[0] / self.cpf
         msg.wrench.force.z = -1.0 * self.data[1] / self.cpf
@@ -121,28 +113,61 @@ class Sensor:
         msg.wrench.torque.z = -1.0 * self.data[4] / self.cpt
         self.pub_raw.publish(msg)
 
-    def compensate_and_publish(self, raw_msg):
-        '''Compute and publish absolute force/torque by removing gripper bias from software reset.'''
+    def update_imu_data(self, imu_msg):
+        '''Store the latest IMU data with thread safety.'''
+        with self.imu_lock:
+            self.latest_imu = imu_msg
+
+    def publish_absolute(self, raw_msg):
+        '''Publish absolute forces/torques by removing gripper bias from reset.'''
         absolute_msg = WrenchStamped()
         absolute_msg.header = raw_msg.header
         absolute_msg.header.frame_id = "ati_link"
-        
-        # Subtract the gripper bias (part of the software bias) to get absolute external forces/torques
-        absolute_msg.wrench.force.x = raw_msg.wrench.force.x + self.bias_force[0]
-        absolute_msg.wrench.force.y = raw_msg.wrench.force.y + self.bias_force[1]
-        absolute_msg.wrench.force.z = raw_msg.wrench.force.z + self.bias_force[2]
-        absolute_msg.wrench.torque.x = raw_msg.wrench.torque.x + self.bias_torque[0]
-        absolute_msg.wrench.torque.y = raw_msg.wrench.torque.y + self.bias_torque[1]
-        absolute_msg.wrench.torque.z = raw_msg.wrench.torque.z + self.bias_torque[2]
-        
+        absolute_msg.wrench.force.x = raw_msg.wrench.force.x - self.bias_force[0]
+        absolute_msg.wrench.force.y = raw_msg.wrench.force.y - self.bias_force[1]
+        absolute_msg.wrench.force.z = raw_msg.wrench.force.z - self.bias_force[2]
+        absolute_msg.wrench.torque.x = raw_msg.wrench.torque.x - self.bias_torque[0]
+        absolute_msg.wrench.torque.y = raw_msg.wrench.torque.y - self.bias_torque[1]
+        absolute_msg.wrench.torque.z = raw_msg.wrench.torque.z - self.bias_torque[2]
         self.pub_absolute.publish(absolute_msg)
+
+    def publish_external(self, msg):
+        '''Publish external forces/torques using IMU acceleration data.'''
+        external_msg = WrenchStamped()
+        external_msg.header = msg.header
+        external_msg.header.frame_id = "ati_link"
+        
+        with self.imu_lock:
+            if self.latest_imu is None:
+                external_msg.wrench.force.x = 0.0
+                external_msg.wrench.force.y = 0.0
+                external_msg.wrench.force.z = 0.0
+                external_msg.wrench.torque.x = 0.0
+                external_msg.wrench.torque.y = 0.0
+                external_msg.wrench.torque.z = 0.0
+            else:
+                accel = np.array([
+                    self.latest_imu.linear_acceleration.y,
+                    self.latest_imu.linear_acceleration.x,
+                    self.latest_imu.linear_acceleration.z
+                ])
+                dynamic_force = self.gripper_mass * accel
+                dynamic_torque = np.cross(self.gripper_cog, dynamic_force)
+                external_msg.wrench.force.x = msg.wrench.force.x - dynamic_force[0]
+                external_msg.wrench.force.y = msg.wrench.force.y - dynamic_force[1]
+                external_msg.wrench.force.z = msg.wrench.force.z - dynamic_force[2]
+                external_msg.wrench.torque.x = msg.wrench.torque.x - dynamic_torque[0]
+                external_msg.wrench.torque.y = msg.wrench.torque.y - dynamic_torque[1]
+                external_msg.wrench.torque.z = msg.wrench.torque.z - dynamic_torque[2]
+        
+        self.pub_external.publish(external_msg)
 
 if __name__ == "__main__":
     sensor = Sensor()
     try:
         rospy.loginfo("Starting Net FT Streaming..")
         sensor.startStreaming()
-        rospy.spin()  # Keep node alive
+        rospy.spin()
     finally:
         sensor.stopStreaming()
         rospy.loginfo("Net FT Streaming stopped")
