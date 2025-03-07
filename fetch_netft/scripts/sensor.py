@@ -59,9 +59,11 @@ class Sensor:
             gravity_base = np.array([0.0, 0.0, -self.gripper_mass * self.gravity])  # [0, 0, -14.715] N
             self.bias_force = rot_matrix.T.dot(gravity_base)  # Gravity in ati_link frame
             self.bias_torque = np.cross(self.gripper_pos, self.bias_force)  # Torque in ati_link frame
-            rospy.loginfo(f"Gripper bias - Force: {self.bias_force}, Torque: {self.bias_torque}")
+            # Replace f-string with .format()
+            rospy.loginfo("Gripper bias - Force: {0}, Torque: {1}".format(self.bias_force, self.bias_torque))
         except (tf.Exception) as e:
-            rospy.logerr(f"Failed to capture initial pose: {e}")
+            # Replace f-string with % operator
+            rospy.logerr("Failed to capture initial pose: %s" % e)
             self.initial_rot = np.array([0.0, 0.0, 0.0, 1.0])  # Identity quaternion
             self.bias_force = np.array([0.0, 0.0, 0.0])
             self.bias_torque = np.array([0.0, 0.0, 0.0])
