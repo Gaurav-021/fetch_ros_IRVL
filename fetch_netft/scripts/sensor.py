@@ -33,7 +33,7 @@ class Sensor:
         self.tf_listener = tf.TransformListener()
         
         # Gripper properties from ROS parameters
-        self.gripper_mass = rospy.get_param('~gripper_mass', 1.5)  # Default to 1.5 kg
+        self.gripper_mass = float(rospy.get_param('~gripper_mass', 1.5))  # Cast to float
         self.gripper_cog = np.array(rospy.get_param('~gripper_cog', [0.5, 0.0, 0.0]))  # Default to [0.5, 0, 0]
         self.gravity = 9.81  # m/s^2
 
