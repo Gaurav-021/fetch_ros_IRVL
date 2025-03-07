@@ -128,12 +128,12 @@ class Sensor:
         absolute_msg.header.frame_id = "ati_link"
         
         # Subtract the gripper bias (part of the software bias) to get absolute external forces/torques
-        absolute_msg.wrench.force.x = raw_msg.wrench.force.x - self.bias_force[0]
-        absolute_msg.wrench.force.y = raw_msg.wrench.force.y - self.bias_force[1]
-        absolute_msg.wrench.force.z = raw_msg.wrench.force.z - self.bias_force[2]
-        absolute_msg.wrench.torque.x = raw_msg.wrench.torque.x - self.bias_torque[0]
-        absolute_msg.wrench.torque.y = raw_msg.wrench.torque.y - self.bias_torque[1]
-        absolute_msg.wrench.torque.z = raw_msg.wrench.torque.z - self.bias_torque[2]
+        absolute_msg.wrench.force.x = raw_msg.wrench.force.x + self.bias_force[0]
+        absolute_msg.wrench.force.y = raw_msg.wrench.force.y + self.bias_force[1]
+        absolute_msg.wrench.force.z = raw_msg.wrench.force.z + self.bias_force[2]
+        absolute_msg.wrench.torque.x = raw_msg.wrench.torque.x + self.bias_torque[0]
+        absolute_msg.wrench.torque.y = raw_msg.wrench.torque.y + self.bias_torque[1]
+        absolute_msg.wrench.torque.z = raw_msg.wrench.torque.z + self.bias_torque[2]
         
         self.pub_absolute.publish(absolute_msg)
 
