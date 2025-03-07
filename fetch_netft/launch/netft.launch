@@ -4,18 +4,20 @@
 
     <!-- Load gripper configuration based on robot_type -->
     <group if="$(eval arg('robot_type') == 'fetch')">
-        <rosparam file="$(find fetch_netft)/config/gripper_config.yaml" command="load" ns="fetch" />
+        <!-- Load the YAML file into the parameter server -->
+        <rosparam command="load" file="$(find fetch_netft)/config/gripper_config.yaml" />
         <node pkg="fetch_netft" type="sensor.py" name="ft_sensor" output="screen">
-            <param name="gripper_mass" type="double" value="$(eval find('fetch_netft') + '/config/gripper_config.yaml/fetch/gripper_mass')" />
-            <param name="gripper_cog" value="$(eval find('fetch_netft') + '/config/gripper_config.yaml/fetch/gripper_cog')" />
+            <!-- Fetch gripper_mass and gripper_cog from the loaded YAML -->
+            <param name="gripper_mass" type="double" value="$(arg fetch/gripper_mass)" />
+            <param name="gripper_cog" value="$(arg fetch/gripper_cog)" />
         </node>
     </group>
 
     <group if="$(eval arg('robot_type') == 'fetch_UMI')">
-        <rosparam file="$(find fetch_netft)/config/gripper_config.yaml" command="load" ns="fetch_UMI" />
+        <rosparam command="load" file="$(find fetch_netft)/config/gripper_config.yaml" />
         <node pkg="fetch_netft" type="sensor.py" name="ft_sensor" output="screen">
-            <param name="gripper_mass" type="double" value="$(eval find('fetch_netft') + '/config/gripper_config.yaml/fetch_UMI/gripper_mass')" />
-            <param name="gripper_cog" value="$(eval find('fetch_netft') + '/config/gripper_config.yaml/fetch_UMI/gripper_cog')" />
+            <param name="gripper_mass" type="double" value="$(arg fetch_UMI/gripper_mass)" />
+            <param name="gripper_cog" value="$(arg fetch_UMI/gripper_cog)" />
         </node>
     </group>
 </launch>
