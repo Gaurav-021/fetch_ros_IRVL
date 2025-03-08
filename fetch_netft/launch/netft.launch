@@ -2,22 +2,21 @@
     <!-- Argument for robot type, defaulting to "fetch" -->
     <arg name="robot_type" default="fetch" doc="Type of robot: 'fetch' or 'fetch_UMI'"/>
 
-    <!-- Load gripper configuration based on robot_type -->
+    <!-- Load the YAML file into the global namespace -->
+    <rosparam command="load" file="$(find fetch_netft)/config/gripper_config.yaml" />
+
+    <!-- Launch the sensor node with parameters based on robot_type -->
     <group if="$(eval arg('robot_type') == 'fetch')">
-        <!-- Load the YAML file into the global namespace -->
-        <rosparam command="load" file="$(find fetch_netft)/config/gripper_config.yaml" />
         <node pkg="fetch_netft" type="sensor.py" name="ft_sensor" output="screen">
-            <!-- Set private parameters directly from the loaded YAML -->
-            <param name="gripper_mass" type="double" value="$(eval yaml('fetch/gripper_mass'))" />
-            <param name="gripper_cog" value="$(eval yaml('fetch/gripper_cog'))" />
+            <param name="gripper_mass" type="double" value="$(param fetch/gripper_mass)" />
+            <param name="gripper_cog" value="$(param fetch/gripper_cog)" />
         </node>
     </group>
 
     <group if="$(eval arg('robot_type') == 'fetch_UMI')">
-        <rosparam command="load" file="$(find fetch_netft)/config/gripper_config.yaml" />
         <node pkg="fetch_netft" type="sensor.py" name="ft_sensor" output="screen">
-            <param name="gripper_mass" type="double" value="$(eval yaml('fetch_UMI/gripper_mass'))" />
-            <param name="gripper_cog" value="$(eval yaml('fetch_UMI/gripper_cog'))" />
+            <param name="gripper_mass" type="double" value="$(param fetch_UMI/gripper_mass)" />
+            <param name="gripper_cog" value="$(param fetch_UMI/gripper_cog)" />
         </node>
     </group>
 </launch>
