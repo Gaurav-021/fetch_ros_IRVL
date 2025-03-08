@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import socket
 import struct
-from threading import Thread
+from threading import Thread, Lock
 import rospy
 from geometry_msgs.msg import WrenchStamped
 from sensor_msgs.msg import Imu
@@ -55,7 +55,7 @@ class Sensor:
         
         # IMU data storage
         self.latest_imu = None
-        self.imu_lock = Threading.Lock()
+        self.imu_lock = Lock()
 
     def load_gripper_config(self):
         '''Load gripper mass and CoG from gripper_config.yaml based on robot_type.'''
