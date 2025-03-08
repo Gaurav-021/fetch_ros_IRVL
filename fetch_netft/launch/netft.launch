@@ -8,15 +8,19 @@
     <!-- Launch the sensor node with parameters based on robot_type -->
     <group if="$(eval arg('robot_type') == 'fetch')">
         <node pkg="fetch_netft" type="sensor.py" name="ft_sensor" output="screen">
-            <param name="gripper_mass" type="double" value="$(param fetch/gripper_mass)" />
-            <param name="gripper_cog" value="$(param fetch/gripper_cog)" />
+            <rosparam>
+                gripper_mass: $(param fetch/gripper_mass)
+                gripper_cog: $(param fetch/gripper_cog)
+            </rosparam>
         </node>
     </group>
 
     <group if="$(eval arg('robot_type') == 'fetch_UMI')">
         <node pkg="fetch_netft" type="sensor.py" name="ft_sensor" output="screen">
-            <param name="gripper_mass" type="double" value="$(param fetch_UMI/gripper_mass)" />
-            <param name="gripper_cog" value="$(param fetch_UMI/gripper_cog)" />
+            <rosparam>
+                gripper_mass: $(param fetch_UMI/gripper_mass)
+                gripper_cog: $(param fetch_UMI/gripper_cog)
+            </rosparam>
         </node>
     </group>
 </launch>
