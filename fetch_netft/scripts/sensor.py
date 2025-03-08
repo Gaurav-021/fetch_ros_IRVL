@@ -9,6 +9,8 @@ import time
 import tf
 from tf.transformations import quaternion_matrix
 import numpy as np
+import yaml
+import os
 
 class Sensor:
     '''Class manager for ATI Force/Torque sensor via UDP/RDT with absolute and external force/torque computation.'''
@@ -32,9 +34,14 @@ class Sensor:
         # TF listener
         self.tf_listener = tf.TransformListener()
         
-        # Gripper properties from ROS parameters
-        self.gripper_mass = float(rospy.get_param('~gripper_mass', 1.5))  # Cast to float
-        self.gripper_cog = np.array(rospy.get_param('~gripper_cog', [0.5, 0.0, 0.0]))  # Default to [0.5, 0, 0]
+        # Get robot_type from ROS parameter server
+        self.robot_type = rospy.get_param('~robot_type', 'fetch')  # Default to 'fetch'
+        rospy.loginfo("Robot type: %s" % self.robot_type)
+
+        # Load gripper configuration from YAML file
+        self.load_gripper_config()
+
+        # Gripper properties (set by load_gripper_config)
         self.gravity = 9.81  # m/s^2
 
         # Reset and capture bias
@@ -50,8 +57,31 @@ class Sensor:
         self.latest_imu = None
         self.imu_lock = Threading.Lock()
 
+    def load_gripper_config(self):
+        '''Load gripper mass and CoG from gripper_config.yaml based on robot_type.'''
+        # Construct the path to the YAML file
+        pkg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        yaml_path = os.path.join(pkg_path, 'config', 'gripper_config.yaml')
+        
+        try:
+            with open(yaml_path, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            if self.robot_type not in config:
+                rospy.logerr("Robot type '%s' not found in %s. Using defaults." % (self.robot_type, yaml_path))
+                self.gripper_mass = 1.5
+                self.gripper_cog = np.array([0.5, 0.0, 0.0])
+            else:
+                robot_config = config[self.robot_type]
+                self.gripper_mass = float(robot_config['gripper_mass'])  # Ensure float
+                self.gripper_cog = np.array(robot_config['gripper_cog'])  # Convert list to numpy array
+                rospy.loginfo("Loaded gripper config - Mass: %s, CoG: %s" % (self.gripper_mass, self.gripper_cog))
+        except Exception as e:
+            rospy.logerr("Failed to load gripper config from %s: %s. Using defaults." % (yaml_path, e))
+            self.gripper_mass = 1.5
+            self.gripper_cog = np.array([0.5, 0.0, 0.0])
+
     def capture_initial_bias(self):
-        '''Capture initial pose and compute gripper bias after reset.'''
         try:
             self.tf_listener.waitForTransform("base_link", "ati_link", rospy.Time(0), rospy.Duration(2.0))
             (trans, rot) = self.tf_listener.lookupTransform("base_link", "ati_link", rospy.Time(0))
@@ -62,7 +92,7 @@ class Sensor:
             gravity_base = np.array([0.0, 0.0, -self.gripper_mass * self.gravity])
             self.bias_force = rot_matrix.T.dot(gravity_base)
             self.bias_torque = np.cross(self.gripper_cog, self.bias_force)
-            rospy.loginfo("Gripper bias - Force: {0}, Torque: {1}".format(self.bias_force, self.bias_torque))
+            rospy.loginfo("Gripper bias - Force: %s, Torque: %s" % (self.bias_force, self.bias_torque))
         except (tf.Exception) as e:
             rospy.logerr("Failed to capture initial pose: %s" % e)
             self.initial_rot = np.array([0.0, 0.0, 0.0, 1.0])
@@ -114,25 +144,22 @@ class Sensor:
         self.pub_raw.publish(msg)
 
     def update_imu_data(self, imu_msg):
-        '''Store the latest IMU data with thread safety.'''
         with self.imu_lock:
             self.latest_imu = imu_msg
 
     def publish_absolute(self, raw_msg):
-        '''Publish absolute forces/torques by removing gripper bias from reset.'''
         absolute_msg = WrenchStamped()
         absolute_msg.header = raw_msg.header
         absolute_msg.header.frame_id = "ati_link"
-        absolute_msg.wrench.force.x = raw_msg.wrench.force.x - self.bias_force[0]
-        absolute_msg.wrench.force.y = raw_msg.wrench.force.y - self.bias_force[1]
-        absolute_msg.wrench.force.z = raw_msg.wrench.force.z - self.bias_force[2]
-        absolute_msg.wrench.torque.x = raw_msg.wrench.torque.x - self.bias_torque[0]
-        absolute_msg.wrench.torque.y = raw_msg.wrench.torque.y - self.bias_torque[1]
-        absolute_msg.wrench.torque.z = raw_msg.wrench.torque.z - self.bias_torque[2]
+        absolute_msg.wrench.force.x = raw_msg.wrench.force.x + self.bias_force[0]
+        absolute_msg.wrench.force.y = raw_msg.wrench.force.y + self.bias_force[1]
+        absolute_msg.wrench.force.z = raw_msg.wrench.force.z + self.bias_force[2]
+        absolute_msg.wrench.torque.x = raw_msg.wrench.torque.x + self.bias_torque[0]
+        absolute_msg.wrench.torque.y = raw_msg.wrench.torque.y + self.bias_torque[1]
+        absolute_msg.wrench.torque.z = raw_msg.wrench.torque.z + self.bias_torque[2]
         self.pub_absolute.publish(absolute_msg)
 
     def publish_external(self, msg):
-        '''Publish external forces/torques using IMU acceleration data.'''
         external_msg = WrenchStamped()
         external_msg.header = msg.header
         external_msg.header.frame_id = "ati_link"
