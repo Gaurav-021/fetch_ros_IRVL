@@ -51,8 +51,8 @@ class ArmTeleop:
         self.max_acc_yaw = rospy.get_param('~max_acc_yaw', 10.0)
 
         # Force-torque limits
-        self.max_force = 40.0  # 10 N
-        self.max_torque = 5.0  # 1 N·m
+        self.max_force = 10.0  # 10 N
+        self.max_torque = 2.0  # 1 N·m
 
         # ROS publisher for arm
         self.cmd_pub = rospy.Publisher('/arm_controller/cartesian_twist/command', 
@@ -77,7 +77,7 @@ class ArmTeleop:
         # Force-torque sensor subscriber
         self.wrench = WrenchStamped()
         self.wrench_lock = threading.Lock()
-        self.ft_sub = rospy.Subscriber('/gripper/ft_sensor', WrenchStamped, self.ft_callback)
+        self.ft_sub = rospy.Subscriber('/gripper/ft_sensor/external', WrenchStamped, self.ft_callback)
 
         # State variables
         self.active = True
