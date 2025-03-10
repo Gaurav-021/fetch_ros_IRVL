@@ -28,6 +28,7 @@ class Sensor:
         rospy.init_node('ft_sensor', anonymous=True)
         self.pub_raw = rospy.Publisher('/gripper/ft_sensor/raw', WrenchStamped, queue_size=10)
         self.pub_absolute = rospy.Publisher('/gripper/ft_sensor/absolute', WrenchStamped, queue_size=10)
+        self.pub_external_imu = rospy.Publisher('/gripper/ft_sensor/external_imu', WrenchStamped, queue_size=10)
         self.pub_external = rospy.Publisher('/gripper/ft_sensor/external', WrenchStamped, queue_size=10)
         self.data = None
 
@@ -50,12 +51,13 @@ class Sensor:
 
         # Subscribers
         self.sub_raw_absolute = rospy.Subscriber('/gripper/ft_sensor/raw', WrenchStamped, self.publish_absolute)
-        self.sub_raw_external = rospy.Subscriber('/gripper/ft_sensor/absolute', WrenchStamped, self.publish_external)
+        self.sub_absolute_external_imu = rospy.Subscriber('/gripper/ft_sensor/absolute', WrenchStamped, self.publish_external_imu)
+        self.sub_absolute_external = rospy.Subscriber('/gripper/ft_sensor/raw', WrenchStamped, self.publish_external)
         self.sub_imu = rospy.Subscriber('/gripper/imu', Imu, self.update_imu_data)
         
         # IMU data storage
         self.latest_imu = None
-        self.imu_lock = Lock()
+        #self.imu_lock = Lock() #Acceleration is continuous, therefore, partially updated data is better than slower data.
 
     def load_gripper_config(self):
         '''Load gripper mass and CoG from gripper_config.yaml based on robot_type.'''
@@ -78,8 +80,8 @@ class Sensor:
                 rospy.loginfo("Loaded gripper config - Mass: %s, CoG: %s" % (self.gripper_mass, self.gripper_cog))
         except Exception as e:
             rospy.logerr("Failed to load gripper config from %s: %s. Using defaults." % (yaml_path, e))
-            self.gripper_mass = 1.5
-            self.gripper_cog = np.array([0.5, 0.0, 0.0])
+            self.gripper_mass = 1.56
+            self.gripper_cog = np.array([0.0547, 0.0, 0.0])
 
     def capture_initial_bias(self):
         try:
@@ -144,8 +146,7 @@ class Sensor:
         self.pub_raw.publish(msg)
 
     def update_imu_data(self, imu_msg):
-        with self.imu_lock:
-            self.latest_imu = imu_msg
+        self.latest_imu = imu_msg
 
     def publish_absolute(self, raw_msg):
         absolute_msg = WrenchStamped()
@@ -159,35 +160,52 @@ class Sensor:
         absolute_msg.wrench.torque.z = raw_msg.wrench.torque.z + self.bias_torque[2]
         self.pub_absolute.publish(absolute_msg)
 
-    def publish_external(self, msg):
+    def publish_external_imu(self, msg):
         external_msg = WrenchStamped()
         external_msg.header = msg.header
         external_msg.header.frame_id = "ati_link"
         
-        with self.imu_lock:
-            if self.latest_imu is None:
-                external_msg.wrench.force.x = 0.0
-                external_msg.wrench.force.y = 0.0
-                external_msg.wrench.force.z = 0.0
-                external_msg.wrench.torque.x = 0.0
-                external_msg.wrench.torque.y = 0.0
-                external_msg.wrench.torque.z = 0.0
-            else:
-                accel = np.array([
-                    self.latest_imu.linear_acceleration.y,
-                    self.latest_imu.linear_acceleration.x,
-                    self.latest_imu.linear_acceleration.z
-                ])
-                dynamic_force = self.gripper_mass * accel
-                dynamic_torque = np.cross(self.gripper_cog, dynamic_force)
-                external_msg.wrench.force.x = msg.wrench.force.x - dynamic_force[0]
-                external_msg.wrench.force.y = msg.wrench.force.y - dynamic_force[1]
-                external_msg.wrench.force.z = msg.wrench.force.z - dynamic_force[2]
-                external_msg.wrench.torque.x = msg.wrench.torque.x - dynamic_torque[0]
-                external_msg.wrench.torque.y = msg.wrench.torque.y - dynamic_torque[1]
-                external_msg.wrench.torque.z = msg.wrench.torque.z - dynamic_torque[2]
+        if self.latest_imu is None:
+            return
         
-        self.pub_external.publish(external_msg)
+        accel = np.array([
+            self.latest_imu.linear_acceleration.y,
+            self.latest_imu.linear_acceleration.x,
+            self.latest_imu.linear_acceleration.z
+        ])
+        
+        dynamic_force = self.gripper_mass * accel
+        dynamic_torque = np.cross(self.gripper_cog, dynamic_force)
+        external_msg.wrench.force.x = msg.wrench.force.x - dynamic_force[0]
+        external_msg.wrench.force.y = msg.wrench.force.y - dynamic_force[1]
+        external_msg.wrench.force.z = msg.wrench.force.z - dynamic_force[2]
+        external_msg.wrench.torque.x = msg.wrench.torque.x - dynamic_torque[0]
+        external_msg.wrench.torque.y = msg.wrench.torque.y - dynamic_torque[1]
+        external_msg.wrench.torque.z = msg.wrench.torque.z - dynamic_torque[2]
+    
+        self.pub_external_imu.publish(external_msg)
+    
+    def publish_external(self, raw_msg):
+        try:
+            (trans, rot) = self.tf_listener.lookupTransform("base_link", "ati_link", rospy.Time(0))
+            R = quaternion_matrix(rot)[:3, :3]
+            gravity_base = np.array([0.0, 0.0, -self.gravity])
+            F_gravity = self.gripper_mass * R.dot(gravity_base)
+            T_gravity = np.cross(self.gripper_cog, F_gravity)
+
+            external_msg = WrenchStamped()
+            external_msg.header = raw_msg.header
+            external_msg.header.frame_id = "ati_link"
+            external_msg.wrench.force.x = raw_msg.wrench.force.x + F_gravity[0] + self.bias_force[0]
+            external_msg.wrench.force.y = raw_msg.wrench.force.y + F_gravity[1] + self.bias_force[1]
+            external_msg.wrench.force.z = raw_msg.wrench.force.z + F_gravity[2] + self.bias_force[2]
+            external_msg.wrench.torque.x = raw_msg.wrench.torque.x + T_gravity[0] + self.bias_torque[0]
+            external_msg.wrench.torque.y = raw_msg.wrench.torque.y + T_gravity[1] + self.bias_torque[1]
+            external_msg.wrench.torque.z = raw_msg.wrench.torque.z + T_gravity[2] + self.bias_torque[2]
+
+            self.pub_external.publish(external_msg)
+        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
+            rospy.logwarn("TF lookup failed: %s" % e)
 
 if __name__ == "__main__":
     sensor = Sensor()

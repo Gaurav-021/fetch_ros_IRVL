@@ -21,6 +21,11 @@ import numpy as np
 import message_filters
 import ros_numpy
 import cv2
+import imageio
+import tf
+from tf.transformations import quaternion_matrix
+from pathlib import Path
+from PIL import Image as pli_Image
 
 
 def make_parser():
@@ -77,16 +82,16 @@ def get_current_joint_values(joint_names):
         return None
 
 class FTRecorder(Thread):
-    def __init__(self, frequency, output_dir):
+    def __init__(self, frequency, output_dir,file_name = "ft_values.csv", topic_name = "/gripper/ft_sensor/absolute"):
         Thread.__init__(self)
         self.frequency = frequency  # Frequency in Hz (e.g., 10 Hz means 10 samples per second)
-        self.output_file = os.path.join(output_dir, "ft_values.csv")
+        self.output_file = os.path.join(output_dir, file_name)
         self.stop_flag = False
         self.lock = Lock()
         self.latest_ft_data = None
         
         # Initialize subscriber
-        self.subscriber = rospy.Subscriber("/gripper/ft_sensor", WrenchStamped, self.ft_state_callback)
+        self.subscriber = rospy.Subscriber(topic_name, WrenchStamped, self.ft_state_callback)
 
         # Initialize CSV file
         with open(self.output_file, mode='w') as csvfile:
@@ -146,19 +151,31 @@ class JointValueRecorder(Thread):
         self.joint_names = joint_names
         self.frequency = frequency  # Frequency in Hz (e.g., 10 Hz means 10 samples per second)
         self.output_file = os.path.join(output_dir, "joint_state.csv")
+        self.pose_output_file = os.path.join(output_dir, "finger_tip_pose.csv")  # CSV for pose
         self.stop_flag = False
         self.lock = Lock()
         self.latest_joint_values = None
-        self.timestamp = None
+        self.timestamp = None 
+        self.tf_listener = tf.TransformListener()  # Initialize TF listener
         
         # Initialize subscriber
         self.subscriber = rospy.Subscriber("/joint_states", JointState, self.joint_state_callback)
 
-        # Initialize CSV file
+        # Initialize joint state CSV file
         with open(self.output_file, mode='w') as csvfile:
             writer = csv.writer(csvfile)
-            # Write header: timestamp + joint names
             header = ['timestamp'] + self.joint_names
+            writer.writerow(header)
+
+        # Initialize pose CSV file with roll, pitch, yaw
+        with open(self.pose_output_file, mode='w') as csvfile:
+            writer = csv.writer(csvfile)
+            header = [
+                'timestamp', 
+                'pos_x', 'pos_y', 'pos_z', 
+                'quat_x', 'quat_y', 'quat_z', 'quat_w',
+                'roll', 'pitch', 'yaw'
+            ]
             writer.writerow(header)
         
         self.start()
@@ -174,28 +191,60 @@ class JointValueRecorder(Thread):
                 self.latest_joint_values = joint_values
                 self.timestamp = msg.header.stamp.to_sec()
 
+    def get_finger_tip_pose(self):
+        # Compute the pose of finger_tip_link w.r.t. head_camera_rgb_frame
+        try:
+            # Wait for the transform to be available (timeout of 1 second)
+            self.tf_listener.waitForTransform(
+                "head_camera_rgb_optical_frame", "finger_tip_link", rospy.Time(0), rospy.Duration(1.0)
+            )
+            # Get the transform
+            (trans, rot) = self.tf_listener.lookupTransform(
+                "head_camera_rgb_optical_frame", "finger_tip_link", rospy.Time(0)
+            )
+            return trans, rot  # trans: [x, y, z], rot: [qx, qy, qz, qw]
+        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
+            rospy.logwarn("TF lookup failed: %s" % str(e))
+            return None, None
+
+    def quaternion_to_euler(self, quat):
+        # Convert quaternion [x, y, z, w] to roll, pitch, yaw (in radians)
+        roll, pitch, yaw = tf.transformations.euler_from_quaternion(quat)
+        return roll, pitch, yaw
+
     def run(self):
-        rospy.loginfo("Starting joint value recording at" + str(self.frequency) + " Hz...")
+        rospy.loginfo("Starting joint value and pose recording at " + str(self.frequency) + " Hz...")
         rate = rospy.Rate(self.frequency)  # ROS rate to control frequency
 
         while not rospy.is_shutdown() and not self.stop_flag:
             with self.lock:
                 if self.latest_joint_values and self.timestamp:
+                    # Write joint values
                     self.write_to_csv(self.timestamp, self.latest_joint_values)
+                    # Compute and write finger tip pose with Euler angles
+                    trans, rot = self.get_finger_tip_pose()
+                    if trans is not None and rot is not None:
+                        roll, pitch, yaw = self.quaternion_to_euler(rot)
+                        self.write_pose_to_csv(self.timestamp, trans, rot, roll, pitch, yaw)
             rate.sleep()
 
-        rospy.loginfo("Joint value recording stopped. Output saved to: " + self.output_file)
+        rospy.loginfo("Joint value and pose recording stopped. Output saved to: " + self.output_file + " and " + self.pose_output_file)
 
-    def write_to_csv(self,timestamp,  joint_values):
+    def write_to_csv(self, timestamp, joint_values):
         with open(self.output_file, mode='a') as csvfile:
             writer = csv.writer(csvfile)
-            # Write row: timestamp + joint values
             row = [timestamp] + [joint_values.get(name, None) for name in self.joint_names]
+            writer.writerow(row)
+
+    def write_pose_to_csv(self, timestamp, trans, rot, roll, pitch, yaw):
+        with open(self.pose_output_file, mode='a') as csvfile:
+            writer = csv.writer(csvfile)
+            # Write row: timestamp + position + quaternion + roll, pitch, yaw
+            row = [timestamp] + list(trans) + list(rot) + [roll, pitch, yaw]
             writer.writerow(row)
 
     def stop(self):
         self.stop_flag = True
-
 
 class IMURecorder(Thread):
     def __init__(self, frequency, output_dir):
@@ -341,7 +390,6 @@ class UnTuckThread(Thread):
                     rospy.loginfo("Success in Reseting Position")
                     return
         
-
 class RGBD_Recorder(Thread):
 
     def __init__(self, output_dir, camera='Fetch', frequency = 30):
@@ -444,6 +492,7 @@ class RGBD_Recorder(Thread):
 
     def run(self):
         rate = rospy.Rate(self.frequency)  # Frequency of recording
+        rospy.loginfo("Starting RGBD recording at " + str(self.frequency) + " Hz...")
         while not rospy.is_shutdown() and not self.stop_flag:
             with self.lock:
                 if self.im is not None and self.depth is not None:
@@ -467,69 +516,22 @@ class RGBD_Recorder(Thread):
         cv2.imwrite(depth_file, depth_normalized)
 
         self.counter += 1
-    
-    def collect_frame(self, rgb_frame, depth_frame):
-        # Collect RGB and Depth frames
-        self.rgb_frames.append(rgb_frame)
-        self.depth_frames.append(depth_frame)
-        self.timestamps.append(rospy.get_time())
-
-    def save_frame_mp4_depricated(self, rgb_frame, depth_frame):
-        # Initialize video writers if not already done
-        if self.rgb_video_writer is None:
-            rgb_video_path = os.path.join(self.output_dir, "rgb_video.mp4")
-            rospy.loginfo("Recording video to "+rgb_video_path)
-            self.rgb_video_writer = cv2.VideoWriter(rgb_video_path, cv2.VideoWriter_fourcc(*'mp4v'), self.frequency, (rgb_frame.shape[1], rgb_frame.shape[0]))
-
-        #if self.depth_video_writer is None:
-        #    depth_video_path = os.path.join(self.output_dir, "depth_video.mp4")
-        #    self.depth_video_writer = cv2.VideoWriter(depth_video_path, cv2.VideoWriter_fourcc(*'mp4v'), self.frequency, (depth_frame.shape[1], depth_frame.shape[0]))
-
-        # Write RGB frame
-        rgb_frame_bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-        self.rgb_video_writer.write(rgb_frame_bgr)
-
-        # Normalize and write depth frame
-        #depth_normalized = np.uint8(depth_frame / np.max(depth_frame) * 255)  # Normalize depth for visualization
-        #depth_colored = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
-        #self.depth_video_writer.write(depth_colored)
-
-        # Save depth frame and timestamp to memory
-        #self.depth_frames.append(depth_frame)
-        #self.timestamps.append(rospy.get_time())
-
-    def save_depth_data(self):
-        # Save all depth frames and timestamps to a single .npy file
-        depth_data_file = os.path.join(self.output_dir, "depth_data.npy")
-        depth_data = {
-            "frames": np.array(self.depth_frames),
-            "timestamps": np.array(self.timestamps)
-        }
-        np.save(depth_data_file, depth_data)
-        rospy.loginfo("Depth data saved to " + depth_data_file)
-    
-    def save_all_rgbd_frames(self):
-        if not self.rgb_frames or not self.depth_frames:
-            rospy.logwarn("No frames were collected to save.")
-            return
-
-        # Convert lists to numpy arrays
-        rgb_data = np.array(self.rgb_frames,dtype=np.uint8)  # Shape: (num_frames, height, width, 3)
-        depth_data = np.array(self.depth_frames)*10000  # Shape: (num_frames, height, width)
-        depth_data = depth_data.astype(np.uint16)
-        timestamps = np.array(self.timestamps)  # Shape: (num_frames)
-
-        # Save as a single .npy file
-        rgbd_file = os.path.join(self.output_dir, "rgbd_data.npz")
-        np.savez_compressed(rgbd_file, {
-            "rgb": rgb_data,
-            "depth": depth_data,
-            "timestamps": timestamps
-        })
-        rospy.loginfo("All RGBD frames saved to " + rgbd_file)
 
     def stop(self):
         self.stop_flag = True
+        # files = sorted(Path(self.output_dir).glob('rgb_*'), key=lambda path: int(path.stem.split("_")[-1]))
+        # imgs = [np.array(pli_Image.open(f)) for f in files]
+        # frames = np.stack(imgs)
+        # out = os.path.join(self.output_dir, "0_video.gif")
+        # imageio.mimsave(out, frames, durations=frames.shape[0] / self.frequency)
+        # rospy.loginfo("Gif video created and saved at " + out)
+        
+        rospy.loginfo("Stopping RGBD Recording")
+        
+
+        
+        
+
 
 if __name__ == "__main__":
     # intialize ros node
@@ -548,10 +550,10 @@ if __name__ == "__main__":
                     "elbow_flex_joint", "forearm_roll_joint", "wrist_flex_joint", "wrist_roll_joint", "l_gripper_finger_joint",  "r_gripper_finger_joint"]
 
     keybindings = {
-        'q': 'Start Recording',
-        's': 'Save Recording',
-        'o': 'Press and hold for 3 seconds to place robot in origin position.',
-        'p': 'Emergency Pause Robot Movement'
+        'z': 'Start Recording',
+        'x': 'Save Recording',
+        # 'c': 'Press and hold for 3 seconds to place robot in origin position.',
+        # 'v': 'Emergency Pause Robot Movement'
     }
     usage = 'Usage: '
     usage += ''.join('\n  {}: {}'.format(k, v)
@@ -565,25 +567,27 @@ if __name__ == "__main__":
         rgbd_recorder = None
         ft_recorder = None
         imu_recorder = None
+        ft_recorder_external = None
         rospy.loginfo("App Started")
         while True:
             c = getch()
             if c.lower() in keybindings:
                 #print("Input:", c)
-                if c == 'q':
+                if c == 'z':
                     
                     # JOint Value Record
-                    if joint_recorder is None and rgbd_recorder is None and ft_recorder is None and imu_recorder is None:
+                    if joint_recorder is None and rgbd_recorder is None and ft_recorder is None and imu_recorder is None and ft_recorder_external is None:
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         dir = os.path.join(out_dir,"Recordings_" + timestamp)
                         os.mkdir(dir)
                         joint_recorder = JointValueRecorder(joint_names, freq, dir)
                         rgbd_recorder = RGBD_Recorder(dir, frequency=freq)
                         ft_recorder = FTRecorder(output_dir=dir,frequency=freq)
+                        ft_recorder_external = FTRecorder(output_dir=dir,frequency=freq, file_name = "ft_values_external.csv", topic_name = "/gripper/ft_sensor/external")
                         imu_recorder = IMURecorder(output_dir=dir, frequency=freq)
                     else:
                         rospy.loginfo("Recording in progress")
-                elif c == 's':
+                elif c == 'x':
                     if joint_recorder is not None:
                         joint_recorder.stop()
                         joint_recorder.join()
@@ -592,6 +596,10 @@ if __name__ == "__main__":
                         ft_recorder.stop()
                         ft_recorder.join()
                         ft_recorder = None
+                    if ft_recorder_external is not None:
+                        ft_recorder_external.stop()
+                        ft_recorder_external.join()
+                        ft_recorder_external = None
                     if imu_recorder is not None:
                         imu_recorder.stop()
                         imu_recorder.join()
@@ -602,44 +610,48 @@ if __name__ == "__main__":
                         rgbd_recorder = None
                     rospy.loginfo("Recording Complete")
 
-                elif c == 'o':
-                    start_time = time.time()
+                # elif c == 'c':
+                #     start_time = time.time()
 
-                    while c == 'o':
-                        c = getch()  # Continuously check for keypress
-                        elapsed_time = time.time() - start_time
-                        if elapsed_time >= 3.0:
-                            if untuck_thread is None:
-                                rospy.loginfo(" Starting UntuckThread...")
-                                untuck_thread = UnTuckThread()
-                            held = True
-                        time.sleep(0.01)  # Small sleep to avoid busy-waiting
+                #     while c == 'o':
+                #         c = getch()  # Continuously check for keypress
+                #         elapsed_time = time.time() - start_time
+                #         if elapsed_time >= 3.0:
+                #             if untuck_thread is None:
+                #                 rospy.loginfo(" Starting UntuckThread...")
+                #                 untuck_thread = UnTuckThread()
+                #             held = True
+                #         time.sleep(0.01)  # Small sleep to avoid busy-waiting
 
-                elif c == 'p':
-                    if untuck_thread is not None:
-                        rospy.loginfo(" Stopping UntuckThread...")
-                        untuck_thread.stop()
-                        # Destroy all recorders if they exist
-                        if joint_recorder is not None:
-                            joint_recorder.stop()
-                            joint_recorder.join()
-                            joint_recorder = None
-                        if ft_recorder is not None:
-                            ft_recorder.stop()
-                            ft_recorder.join()
-                            ft_recorder = None
-                        if imu_recorder is not None:
-                            imu_recorder.stop()
-                            imu_recorder.join()
-                            imu_recorder = None
-                        if rgbd_recorder is not None:
-                            rgbd_recorder.stop()
-                            rgbd_recorder.join()
-                            rgbd_recorder = None
+                # elif c == 'v':
+                #     if untuck_thread is not None:
+                #         rospy.loginfo(" Stopping UntuckThread...")
+                #         untuck_thread.stop()
+                #         # Destroy all recorders if they exist
+                #         if joint_recorder is not None:
+                #             joint_recorder.stop()
+                #             joint_recorder.join()
+                #             joint_recorder = None
+                #         if ft_recorder is not None:
+                #             ft_recorder.stop()
+                #             ft_recorder.join()
+                #             ft_recorder = None
+                #         if ft_recorder_external is not None:
+                #             ft_recorder_external.stop()
+                #             ft_recorder_external.join()
+                #             ft_recorder_external = None
+                #         if imu_recorder is not None:
+                #             imu_recorder.stop()
+                #             imu_recorder.join()
+                #             imu_recorder = None
+                #         if rgbd_recorder is not None:
+                #             rgbd_recorder.stop()
+                #             rgbd_recorder.join()
+                #             rgbd_recorder = None
                         
-                        raise(KeyboardInterrupt("Stopped Robot"))
-                    else:
-                        rospy.loginfo(" No Untuck Routine Running...")
+                #         raise(KeyboardInterrupt("Stopped Robot"))
+                    # else:
+                    #     rospy.loginfo(" No Untuck Routine Running...")
 
             else:
                 if c == '\x03':
@@ -659,6 +671,10 @@ if __name__ == "__main__":
                         ft_recorder.stop()
                         ft_recorder.join()
                         ft_recorder = None
+                    if ft_recorder_external is not None:
+                        ft_recorder_external.stop()
+                        ft_recorder_external.join()
+                        ft_recorder_external = None
                     if imu_recorder is not None:
                         imu_recorder.stop()
                         imu_recorder.join()

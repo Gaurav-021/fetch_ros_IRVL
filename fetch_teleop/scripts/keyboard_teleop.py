@@ -21,7 +21,7 @@ class ArmTeleop:
         # Axis mapping
         self.axis_map = {
             'x': rospy.get_param('~axis_x', {'up': 'w', 'down': 's'}),
-            'y': rospy.get_param('~axis_y', {'left': 'a', 'right': 'd'}),
+            'y': rospy.get_param('~axis_y', {'left': 'd', 'right': 'a'}),
             'z': rospy.get_param('~axis_z', {'up': 'q', 'down': 'e'}),
             'roll': rospy.get_param('~axis_roll', {'ccw': 'u', 'cw': 'o'}),
             'pitch': rospy.get_param('~axis_pitch', {'up': 'i', 'down': 'k'}),
@@ -52,7 +52,7 @@ class ArmTeleop:
 
         # Force-torque limits
         self.max_force = 10.0  # 10 N
-        self.max_torque = 2.0  # 1 N·m
+        self.max_torque = 2.0  # 2 N·m
 
         # ROS publisher for arm
         self.cmd_pub = rospy.Publisher('/arm_controller/cartesian_twist/command', 
@@ -118,7 +118,7 @@ class ArmTeleop:
             for i in range(1, 10):
                 if keyboard.is_pressed(str(i)):
                     self.current_speed_level = i - 1
-                    rospy.loginfo(f"Speed level set to {i} ({self.speed_levels[self.current_speed_level]*100}%)")
+                    rospy.loginfo("Speed level set to %d (%d%%)" % (i, self.speed_levels[self.current_speed_level]*100))
                     self.last_speed_change_time = current_time
                     break
 
@@ -149,18 +149,49 @@ class ArmTeleop:
 
     def toggle_gripper(self):
         goal = GripperCommandGoal()
+        
+        torque_z = self.wrench.wrench.torque.z
+        torque_exceeded = abs(torque_z) > self.max_torque
+        
         if self.gripper_closed:
+            # Attempt to open the gripper
+            if torque_exceeded:
+                rospy.logwarn("Cannot start opening gripper: |torque.z| = %.2f N·m exceeds max_torque = %.2f N·m" % (abs(torque_z), self.max_torque))
+                return  # Skip opening if torque limit is exceeded initially
             goal.command.position = self.max_position
             goal.command.max_effort = self.max_effort
-            self.gripper_closed = False
+            self.gripper_closed = False  # Tentatively set to False, will revert if cancelled
             rospy.loginfo("Opening gripper")
+            
+            # Send goal and monitor torque during execution
+            self.gripper_client.send_goal(goal)
+            rate = rospy.Rate(100)  # Check at 100 Hz
+            while self.gripper_client.get_state() in [actionlib.GoalStatus.ACTIVE, actionlib.GoalStatus.PENDING]:
+                current_torque_z = self.wrench.wrench.torque.z
+                if abs(current_torque_z) > self.max_torque:
+                    self.gripper_client.cancel_goal()
+                    goal.command.position = self.min_position
+                    goal.command.max_effort = self.max_effort
+                    rospy.loginfo("Closing gripper")
+                    self.gripper_client.send_goal(goal)
+                    self.gripper_client.wait_for_result() 
+                    rospy.logwarn("Gripper opening stopped: |torque.z| = %.2f N·m exceeds max_torque = %.2f N·m" % (abs(current_torque_z), self.max_torque))
+                    self.gripper_closed = True  # Revert state since opening was aborted
+                    break
+                rate.sleep()
+            
+            # Check final state after completion or cancellation
+            if self.gripper_client.get_state() != actionlib.GoalStatus.SUCCEEDED:
+                self.gripper_closed = True  # Ensure state reflects failure or cancellation
         else:
+            # Close the gripper (no torque check needed)
             goal.command.position = self.min_position
             goal.command.max_effort = self.max_effort
             self.gripper_closed = True
             rospy.loginfo("Closing gripper")
-        self.gripper_client.send_goal(goal)
-
+            self.gripper_client.send_goal(goal)
+            self.gripper_client.wait_for_result()  # Blocking call for simplicity, no torque check needed
+        
     def integrate(self, desired, last, max_acc, dt):
         diff = desired - last
         max_change = max_acc * dt
@@ -186,7 +217,7 @@ class ArmTeleop:
             transformed_twist.twist.angular.z = transformed_angular[2]
             return transformed_twist
         except (tf.Exception) as e:
-            rospy.logwarn(f"TF transform failed: {e}")
+            rospy.logwarn("TF transform failed: %s" % e)
             return twist
 
     def limit_twist(self, twist):
@@ -197,46 +228,34 @@ class ArmTeleop:
         # Check forces and limit linear velocities
         if wrench.force.x > self.max_force and twist.twist.linear.x < 0:
             twist.twist.linear.x = 0.0
-            #rospy.logwarn("X force limit exceeded (positive)")
-        elif wrench.force.x < -self.max_force and twist.twist.linear.x > 0:
+        elif ((wrench.force.x < -self.max_force) or (wrench.torque.z > self.max_torque) or (wrench.torque.z < -self.max_torque) or (wrench.torque.y > self.max_torque) or (wrench.torque.y < -self.max_torque)) and twist.twist.linear.x > 0:
             twist.twist.linear.x = 0.0
-            #rospy.logwarn("X force limit exceeded (negative)")
         
-        if wrench.force.y > self.max_force and twist.twist.linear.y < 0:
+        if ((wrench.force.y > self.max_force) or (wrench.torque.z > self.max_torque)) and twist.twist.linear.y < 0:
             twist.twist.linear.y = 0.0
-            #rospy.logwarn("Y force limit exceeded (positive)")
-        elif wrench.force.y < -self.max_force and twist.twist.linear.y > 0:
+        elif ((wrench.force.y < -self.max_force) or (wrench.torque.z < -self.max_torque)) and twist.twist.linear.y > 0:
             twist.twist.linear.y = 0.0
-            #rospy.logwarn("Y force limit exceeded (negative)")
         
-        if wrench.force.z > self.max_force and twist.twist.linear.z < 0:
+        if ((wrench.force.z > self.max_force) or (wrench.torque.y < -self.max_torque)) and twist.twist.linear.z < 0:
             twist.twist.linear.z = 0.0
-            #rospy.logwarn("Z force limit exceeded (positive)")
-        elif wrench.force.z < -self.max_force and twist.twist.linear.z > 0:
+        elif ((wrench.force.z < -self.max_force) or (wrench.torque.y > self.max_torque)) and twist.twist.linear.z > 0:
             twist.twist.linear.z = 0.0
-            #rospy.logwarn("Z force limit exceeded (negative)")
 
         # Check torques and limit angular velocities
         if wrench.torque.x > self.max_torque and twist.twist.angular.x < 0:
             twist.twist.angular.x = 0.0
-            rospy.logwarn("Roll torque limit exceeded (positive)")
         elif wrench.torque.x < -self.max_torque and twist.twist.angular.x > 0:
             twist.twist.angular.x = 0.0
-            #rospy.logwarn("Roll torque limit exceeded (negative)")
         
         if wrench.torque.y > self.max_torque and twist.twist.angular.y < 0:
             twist.twist.angular.y = 0.0
-            #rospy.logwarn("Pitch torque limit exceeded (positive)")
         elif wrench.torque.y < -self.max_torque and twist.twist.angular.y > 0:
             twist.twist.angular.y = 0.0
-            #rospy.logwarn("Pitch torque limit exceeded (negative)")
         
         if wrench.torque.z > self.max_torque and twist.twist.angular.z < 0:
             twist.twist.angular.z = 0.0
-            #rospy.logwarn("Yaw torque limit exceeded (positive)")
         elif wrench.torque.z < -self.max_torque and twist.twist.angular.z > 0:
             twist.twist.angular.z = 0.0
-            #rospy.logwarn("Yaw torque limit exceeded (negative)")
 
         return twist
 
@@ -276,6 +295,11 @@ class ArmTeleop:
                     
                     # Transform to base_link
                     publish_twist = self.transform_twist(limited_twist, "gripper_link", "base_link")
+
+                    publish_twist.twist.linear.x = limited_twist.twist.linear.x
+                    publish_twist.twist.linear.y = limited_twist.twist.linear.y
+                    publish_twist.twist.linear.z = limited_twist.twist.linear.z
+
                     self.cmd_pub.publish(publish_twist)
             rate.sleep()
 
