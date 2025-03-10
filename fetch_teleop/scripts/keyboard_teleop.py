@@ -20,9 +20,9 @@ class ArmTeleop:
         
         # Axis mapping
         self.axis_map = {
-            'x': rospy.get_param('~axis_x', {'up': 'w', 'down': 's'}),
+            'x': rospy.get_param('~axis_x', {'up': 'q', 'down': 'e'}),
             'y': rospy.get_param('~axis_y', {'left': 'd', 'right': 'a'}),
-            'z': rospy.get_param('~axis_z', {'up': 'q', 'down': 'e'}),
+            'z': rospy.get_param('~axis_z', {'up': 'w', 'down': 's'}),
             'roll': rospy.get_param('~axis_roll', {'ccw': 'u', 'cw': 'o'}),
             'pitch': rospy.get_param('~axis_pitch', {'up': 'i', 'down': 'k'}),
             'yaw': rospy.get_param('~axis_yaw', {'left': 'j', 'right': 'l'})
@@ -31,7 +31,7 @@ class ArmTeleop:
         self.emergency_stop_key = 'backspace'
         
         # Speed levels
-        self.speed_levels = [0.01, 0.025, 0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0]
+        self.speed_levels = [0.01, 0.025, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
         self.current_speed_level = 4
         self.last_speed_change_time = time.time()
         self.debounce_interval = 0.2
@@ -43,16 +43,16 @@ class ArmTeleop:
         self.max_acc_x = rospy.get_param('~max_acc_x', 10.0)
         self.max_acc_y = rospy.get_param('~max_acc_y', 10.0)
         self.max_acc_z = rospy.get_param('~max_acc_z', 10.0)
-        self.max_vel_roll = rospy.get_param('~max_vel_roll', 2.0)
-        self.max_vel_pitch = rospy.get_param('~max_vel_pitch', 2.0)
-        self.max_vel_yaw = rospy.get_param('~max_vel_yaw', 2.0)
+        self.max_vel_roll = rospy.get_param('~max_vel_roll', 2.0)/1.5
+        self.max_vel_pitch = rospy.get_param('~max_vel_pitch', 2.0)/1.5
+        self.max_vel_yaw = rospy.get_param('~max_vel_yaw', 2.0)/1.5
         self.max_acc_roll = rospy.get_param('~max_acc_roll', 10.0)
         self.max_acc_pitch = rospy.get_param('~max_acc_pitch', 10.0)
         self.max_acc_yaw = rospy.get_param('~max_acc_yaw', 10.0)
 
         # Force-torque limits
-        self.max_force = 10.0  # 10 N
-        self.max_torque = 2.0  # 2 N·m
+        self.max_force = 10.0  #  N
+        self.max_torque = 1.0  #  N·m
 
         # ROS publisher for arm
         self.cmd_pub = rospy.Publisher('/arm_controller/cartesian_twist/command', 
@@ -76,7 +76,6 @@ class ArmTeleop:
 
         # Force-torque sensor subscriber
         self.wrench = WrenchStamped()
-        self.wrench_lock = threading.Lock()
         self.ft_sub = rospy.Subscriber('/gripper/ft_sensor/external', WrenchStamped, self.ft_callback)
 
         # State variables
@@ -98,8 +97,7 @@ class ArmTeleop:
 
     def ft_callback(self, msg):
         """Callback to update force-torque readings."""
-        with self.wrench_lock:
-            self.wrench = msg
+        self.wrench = msg
 
     def keyboard_loop(self):
         while self.running and not rospy.is_shutdown():
@@ -197,21 +195,21 @@ class ArmTeleop:
         max_change = max_acc * dt
         return last + max(min(diff, max_change), -max_change)
 
-    def transform_twist(self, twist, from_frame, to_frame):
+    def transform_twist_angular(self, twist, from_frame, to_frame):
         try:
             self.tf_listener.waitForTransform(to_frame, from_frame, rospy.Time(0), rospy.Duration(1.0))
             (trans, rot) = self.tf_listener.lookupTransform(to_frame, from_frame, rospy.Time(0))
             rot_matrix = quaternion_matrix(rot)[:3, :3]
-            linear = [twist.twist.linear.x, twist.twist.linear.y, twist.twist.linear.z]
-            transformed_linear = rot_matrix.dot(linear)
+            # linear = [twist.twist.linear.x, twist.twist.linear.y, twist.twist.linear.z]
+            # transformed_linear = rot_matrix.dot(linear)
             angular = [twist.twist.angular.x, twist.twist.angular.y, twist.twist.angular.z]
             transformed_angular = rot_matrix.dot(angular)
             transformed_twist = TwistStamped()
             transformed_twist.header.frame_id = to_frame
             transformed_twist.header.stamp = rospy.Time.now()
-            transformed_twist.twist.linear.x = transformed_linear[0]
-            transformed_twist.twist.linear.y = transformed_linear[1]
-            transformed_twist.twist.linear.z = transformed_linear[2]
+            transformed_twist.twist.linear.x = twist.twist.linear.x
+            transformed_twist.twist.linear.y = twist.twist.linear.y
+            transformed_twist.twist.linear.z = twist.twist.linear.z
             transformed_twist.twist.angular.x = transformed_angular[0]
             transformed_twist.twist.angular.y = transformed_angular[1]
             transformed_twist.twist.angular.z = transformed_angular[2]
@@ -222,40 +220,65 @@ class ArmTeleop:
 
     def limit_twist(self, twist):
         """Limit twist based on force-torque sensor readings."""
-        with self.wrench_lock:
-            wrench = self.wrench.wrench
+        wrench = self.wrench.wrench
+
+        #! Careful with this control, if you aren't sure of it don't modify, it may cause catastrophic failures in the robot
+        (trans, rot) = self.tf_listener.lookupTransform("gripper_link", "base_link", rospy.Time(0))
+        rot_matrix = quaternion_matrix(rot)[:3, :3]
+        linear = [twist.twist.linear.x, twist.twist.linear.y, twist.twist.linear.z]
+        transformed_linear = rot_matrix.dot(linear)
+        angular = [twist.twist.angular.x, twist.twist.angular.y, twist.twist.angular.z]
+        transformed_angular = rot_matrix.dot(angular)
 
         # Check forces and limit linear velocities
-        if wrench.force.x > self.max_force and twist.twist.linear.x < 0:
-            twist.twist.linear.x = 0.0
-        elif ((wrench.force.x < -self.max_force) or (wrench.torque.z > self.max_torque) or (wrench.torque.z < -self.max_torque) or (wrench.torque.y > self.max_torque) or (wrench.torque.y < -self.max_torque)) and twist.twist.linear.x > 0:
-            twist.twist.linear.x = 0.0
+        if (wrench.torque.z > self.max_torque) or (wrench.torque.z < -self.max_torque) or (wrench.torque.y > self.max_torque) or (wrench.torque.y < -self.max_torque):
+            transformed_linear[0] = 0.0
+        elif wrench.force.x > self.max_force:
+            transformed_linear[0] = self.max_vel_x/2
+            self.last.twist.linear
+        elif ((wrench.force.x < -self.max_force)):
+            transformed_linear[0] = -self.max_vel_x/2
         
-        if ((wrench.force.y > self.max_force) or (wrench.torque.z > self.max_torque)) and twist.twist.linear.y < 0:
-            twist.twist.linear.y = 0.0
-        elif ((wrench.force.y < -self.max_force) or (wrench.torque.z < -self.max_torque)) and twist.twist.linear.y > 0:
-            twist.twist.linear.y = 0.0
+        if (wrench.torque.z > self.max_torque) or (wrench.torque.z < -self.max_torque):
+            transformed_linear[1] = 0.0
+        elif ((wrench.force.y > self.max_force) ):
+            transformed_linear[1] = self.max_vel_y/2
+        elif ((wrench.force.y < -self.max_force) ):
+            transformed_linear[1] = -self.max_vel_y/2
+
         
-        if ((wrench.force.z > self.max_force) or (wrench.torque.y < -self.max_torque)) and twist.twist.linear.z < 0:
-            twist.twist.linear.z = 0.0
-        elif ((wrench.force.z < -self.max_force) or (wrench.torque.y > self.max_torque)) and twist.twist.linear.z > 0:
-            twist.twist.linear.z = 0.0
+        if (wrench.torque.y < -self.max_torque) or (wrench.torque.y > self.max_torque):
+            transformed_linear[2] = 0.0
+        elif ((wrench.force.z > self.max_force) ):
+            transformed_linear[2] = self.max_vel_z/2
+        elif ((wrench.force.z < -self.max_force) ):
+            transformed_linear[2] = -self.max_vel_z/2
+
+        base_linear = rot_matrix.T.dot(transformed_linear)
+        twist.twist.linear.x = base_linear[0]
+        twist.twist.linear.y = base_linear[1]
+        twist.twist.linear.z = base_linear[2]
 
         # Check torques and limit angular velocities
-        if wrench.torque.x > self.max_torque and twist.twist.angular.x < 0:
-            twist.twist.angular.x = 0.0
-        elif wrench.torque.x < -self.max_torque and twist.twist.angular.x > 0:
-            twist.twist.angular.x = 0.0
+        if wrench.torque.x > self.max_torque:
+            transformed_angular[0] = self.max_vel_roll/2
+        elif wrench.torque.x < -self.max_torque:
+            transformed_angular[0] = -self.max_vel_roll/2
         
-        if wrench.torque.y > self.max_torque and twist.twist.angular.y < 0:
-            twist.twist.angular.y = 0.0
-        elif wrench.torque.y < -self.max_torque and twist.twist.angular.y > 0:
-            twist.twist.angular.y = 0.0
+        if wrench.torque.y > self.max_torque:
+            transformed_angular[1] = self.max_vel_pitch/2
+        elif wrench.torque.y < -self.max_torque:
+            transformed_angular[1] = -self.max_vel_pitch/2
         
-        if wrench.torque.z > self.max_torque and twist.twist.angular.z < 0:
-            twist.twist.angular.z = 0.0
-        elif wrench.torque.z < -self.max_torque and twist.twist.angular.z > 0:
-            twist.twist.angular.z = 0.0
+        if wrench.torque.z > self.max_torque:
+            transformed_angular[2] = self.max_vel_yaw/2
+        elif wrench.torque.z < -self.max_torque:
+            transformed_angular[2] = -self.max_vel_yaw/2
+
+        base_angular = rot_matrix.T.dot(transformed_angular)
+        twist.twist.angular.x = base_angular[0]
+        twist.twist.angular.y = base_angular[1]
+        twist.twist.angular.z = base_angular[2]
 
         return twist
 
@@ -268,39 +291,40 @@ class ArmTeleop:
                 
                 dt = (rospy.Time.now() - self.last.header.stamp).to_sec()
                 if dt > 0:
-                    self.last.twist.linear.x = self.integrate(self.desired.twist.linear.x, 
+                    transformed_twist = self.transform_twist_angular(self.desired, "gripper_link", "base_link")
+                    
+                    # Apply force-torque limits
+                    limited_twist = self.limit_twist(transformed_twist)
+                    
+                    # Transform to base_link
+
+                    # publish_twist.twist.linear.x = limited_twist.twist.linear.x
+                    # publish_twist.twist.linear.y = limited_twist.twist.linear.y
+                    # publish_twist.twist.linear.z = limited_twist.twist.linear.z
+
+                    self.last.twist.linear.x = self.integrate(limited_twist.twist.linear.x, 
                                                             self.last.twist.linear.x, 
                                                             self.max_acc_x, dt)
-                    self.last.twist.linear.y = self.integrate(self.desired.twist.linear.y, 
+                    self.last.twist.linear.y = self.integrate(limited_twist.twist.linear.y, 
                                                             self.last.twist.linear.y, 
                                                             self.max_acc_y, dt)
-                    self.last.twist.linear.z = self.integrate(self.desired.twist.linear.z, 
+                    self.last.twist.linear.z = self.integrate(limited_twist.twist.linear.z, 
                                                             self.last.twist.linear.z, 
                                                             self.max_acc_z, dt)
-                    self.last.twist.angular.x = self.integrate(self.desired.twist.angular.x, 
+                    self.last.twist.angular.x = self.integrate(limited_twist.twist.angular.x, 
                                                              self.last.twist.angular.x, 
                                                              self.max_acc_roll, dt)
-                    self.last.twist.angular.y = self.integrate(self.desired.twist.angular.y, 
+                    self.last.twist.angular.y = self.integrate(limited_twist.twist.angular.y, 
                                                              self.last.twist.angular.y, 
                                                              self.max_acc_pitch, dt)
-                    self.last.twist.angular.z = self.integrate(self.desired.twist.angular.z, 
+                    self.last.twist.angular.z = self.integrate(limited_twist.twist.angular.z, 
                                                              self.last.twist.angular.z, 
                                                              self.max_acc_yaw, dt)
                     
                     self.last.header.stamp = rospy.Time.now()
-                    self.last.header.frame_id = "gripper_link"
-                    
-                    # Apply force-torque limits
-                    limited_twist = self.limit_twist(self.last)
-                    
-                    # Transform to base_link
-                    publish_twist = self.transform_twist(limited_twist, "gripper_link", "base_link")
+                    self.last.header.frame_id = "base_link"
 
-                    publish_twist.twist.linear.x = limited_twist.twist.linear.x
-                    publish_twist.twist.linear.y = limited_twist.twist.linear.y
-                    publish_twist.twist.linear.z = limited_twist.twist.linear.z
-
-                    self.cmd_pub.publish(publish_twist)
+                    self.cmd_pub.publish(self.last)
             rate.sleep()
 
     def emergency_stop(self):
