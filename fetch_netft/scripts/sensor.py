@@ -196,12 +196,12 @@ class Sensor:
             external_msg = WrenchStamped()
             external_msg.header = raw_msg.header
             external_msg.header.frame_id = "ati_link"
-            external_msg.wrench.force.x = raw_msg.wrench.force.x - F_gravity[0] + self.bias_force[0]
-            external_msg.wrench.force.y = raw_msg.wrench.force.y - F_gravity[1] + self.bias_force[1]
-            external_msg.wrench.force.z = raw_msg.wrench.force.z - F_gravity[2] + self.bias_force[2]
-            external_msg.wrench.torque.x = raw_msg.wrench.torque.x - T_gravity[0] + self.bias_torque[0]
-            external_msg.wrench.torque.y = raw_msg.wrench.torque.y - T_gravity[1] + self.bias_torque[1]
-            external_msg.wrench.torque.z = raw_msg.wrench.torque.z - T_gravity[2] + self.bias_torque[2]
+            external_msg.wrench.force.x = raw_msg.wrench.force.x + F_gravity[0] + self.bias_force[0]
+            external_msg.wrench.force.y = raw_msg.wrench.force.y + F_gravity[1] + self.bias_force[1]
+            external_msg.wrench.force.z = raw_msg.wrench.force.z + F_gravity[2] + self.bias_force[2]
+            external_msg.wrench.torque.x = raw_msg.wrench.torque.x + T_gravity[0] + self.bias_torque[0]
+            external_msg.wrench.torque.y = raw_msg.wrench.torque.y + T_gravity[1] + self.bias_torque[1]
+            external_msg.wrench.torque.z = raw_msg.wrench.torque.z + T_gravity[2] + self.bias_torque[2]
 
             self.pub_external.publish(external_msg)
         except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
