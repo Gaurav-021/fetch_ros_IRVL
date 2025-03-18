@@ -63,13 +63,23 @@ If you have sudo privilege the robot drivers will restart immediately after perf
 - We included our calibrated model in [calibrated_files](/fetch_description/robots/calibrated/).
 
 ## fetch_netft package
-To interface with the ATI sensor NetFT device, we developed a ROS package that let's you activate the NetFT UDP/RDT data stream and publish the values to a rostopic. We assigned the NetFT the IP address: 10.42.42.41 on the Fetch internal network. The [sensor.py](/fetch_netft/scripts/sensor.py) script connects to the NetFT and publishes the wrench values as `WrenchStamped` in the `/gripper/ft_sensor` topic. You can initialize the sensor data stream by running the launch file:
+To interface with the ATI sensor NetFT device, we developed a ROS package that let's you activate the NetFT UDP/RDT data stream and publish the values to a rostopic. We assigned the NetFT the IP address: 10.42.42.41 on the Fetch internal network. The [sensor.py](/fetch_netft/scripts/sensor.py) script connects to the NetFT and publishes the wrench values as `WrenchStamped` in the 4 different rostopics. You can initialize the sensor data stream by running the launch file:
 
 ```Shell
 roslaunch fetch_netft netft.launch
 ```
 
-The published Wrench values are with respect to our fetch.urdf `ati_link`. 
+The published Wrench values are with respect to our fetch.urdf `ati_link`.
+
+<p align="center">
+<video src="media/sensor_video.mp4" controls></video>
+</p>
+
+The four rostopics are:
+- `gripper/ft_sensor/raw` for raw values sensed by the force torque sensor (software bias is set when initialized).
+- `gripper/ft_sensor/absolute` uses the gripper information to publish the absolute force and torque sensed by the force sensor. 
+- `gripper/ft_sensor/external` the calculated external forces on the sensor after accounting for the gripper weight and CoG at the current gripper pose.
+- `gripper/ft_sensor/external_imu` calculated external forces using the gripper IMU directly.
 
 ### Notes
 
