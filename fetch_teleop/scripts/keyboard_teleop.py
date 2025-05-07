@@ -51,8 +51,8 @@ class ArmTeleop:
         self.max_acc_yaw = rospy.get_param('~max_acc_yaw', 10.0)
 
         # Force-torque limits
-        self.max_force = 10.0  #  N
-        self.max_torque = 1.0  #  N·m
+        self.max_force = 7.5  #  N
+        self.max_torque = 0.75  #  N·m
 
         # ROS publisher for arm
         self.cmd_pub = rospy.Publisher('/arm_controller/cartesian_twist/command', 
@@ -234,25 +234,25 @@ class ArmTeleop:
         if (wrench.torque.z > self.max_torque) or (wrench.torque.z < -self.max_torque) or (wrench.torque.y > self.max_torque) or (wrench.torque.y < -self.max_torque):
             transformed_linear[0] = 0.0
         elif wrench.force.x > self.max_force:
-            transformed_linear[0] = self.max_vel_x/2
+            transformed_linear[0] = self.max_vel_x/4
             self.last.twist.linear
         elif ((wrench.force.x < -self.max_force)):
-            transformed_linear[0] = -self.max_vel_x/2
+            transformed_linear[0] = -self.max_vel_x/4
         
         if (wrench.torque.z > self.max_torque) or (wrench.torque.z < -self.max_torque):
             transformed_linear[1] = 0.0
         elif ((wrench.force.y > self.max_force) ):
-            transformed_linear[1] = self.max_vel_y/2
+            transformed_linear[1] = self.max_vel_y/4
         elif ((wrench.force.y < -self.max_force) ):
-            transformed_linear[1] = -self.max_vel_y/2
+            transformed_linear[1] = -self.max_vel_y/4
 
         
         if (wrench.torque.y < -self.max_torque) or (wrench.torque.y > self.max_torque):
             transformed_linear[2] = 0.0
         elif ((wrench.force.z > self.max_force) ):
-            transformed_linear[2] = self.max_vel_z/2
+            transformed_linear[2] = self.max_vel_z/4
         elif ((wrench.force.z < -self.max_force) ):
-            transformed_linear[2] = -self.max_vel_z/2
+            transformed_linear[2] = -self.max_vel_z/4
 
         base_linear = rot_matrix.T.dot(transformed_linear)
         twist.twist.linear.x = base_linear[0]
@@ -261,19 +261,19 @@ class ArmTeleop:
 
         # Check torques and limit angular velocities
         if wrench.torque.x > self.max_torque:
-            transformed_angular[0] = self.max_vel_roll/2
+            transformed_angular[0] = self.max_vel_roll/4
         elif wrench.torque.x < -self.max_torque:
-            transformed_angular[0] = -self.max_vel_roll/2
+            transformed_angular[0] = -self.max_vel_roll/4
         
         if wrench.torque.y > self.max_torque:
-            transformed_angular[1] = self.max_vel_pitch/2
+            transformed_angular[1] = self.max_vel_pitch/4
         elif wrench.torque.y < -self.max_torque:
-            transformed_angular[1] = -self.max_vel_pitch/2
+            transformed_angular[1] = -self.max_vel_pitch/4
         
         if wrench.torque.z > self.max_torque:
-            transformed_angular[2] = self.max_vel_yaw/2
+            transformed_angular[2] = self.max_vel_yaw/4
         elif wrench.torque.z < -self.max_torque:
-            transformed_angular[2] = -self.max_vel_yaw/2
+            transformed_angular[2] = -self.max_vel_yaw/4
 
         base_angular = rot_matrix.T.dot(transformed_angular)
         twist.twist.angular.x = base_angular[0]
