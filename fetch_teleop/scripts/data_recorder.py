@@ -154,7 +154,8 @@ class JointValueRecorder(Thread):
         self.pose_output_file = os.path.join(output_dir, "finger_tip_pose.csv")  # CSV for pose
         self.stop_flag = False
         self.lock = Lock()
-        self.latest_joint_values = None
+        self.latest_joint_values = np.zeros(len(self.joint_names))
+        self.joint_idx = {n: idx for idx, n in enumerate(self.joint_names)}
         self.timestamp = None 
         self.tf_listener = tf.TransformListener()  # Initialize TF listener
         
@@ -186,10 +187,12 @@ class JointValueRecorder(Thread):
             joint_values = {}
             for i, name in enumerate(msg.name):
                 if name in self.joint_names:
-                    joint_values[name] = msg.position[i]
-            if "torso_lift_joint" in joint_values.keys():
-                self.latest_joint_values = joint_values
-                self.timestamp = msg.header.stamp.to_sec()
+                    joint_values[name] = msg.position[i] #!Check: finger joints
+            for joint in joint_values.keys():
+                self.latest_joint_values[self.joint_idx[joint]] = joint_values[joint]
+            # if "torso_lift_joint" in joint_values.keys():
+            #     self.latest_joint_values = joint_values
+            #     self.timestamp = msg.header.stamp.to_sec()
 
     def get_finger_tip_pose(self):
         # Compute the pose of finger_tip_link w.r.t. head_camera_rgb_frame
