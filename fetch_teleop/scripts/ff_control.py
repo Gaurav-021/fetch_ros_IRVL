@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+#! Work in progress, do not use
 
 import rospy
 from geometry_msgs.msg import TwistStamped, WrenchStamped
@@ -32,7 +33,7 @@ class ArmTeleop:
         self.max_acc_yaw = rospy.get_param('~max_acc_yaw', 10.0)
 
         # ROS publisher for arm
-        self.cmd_pub = rospy.Publisher('/arm_controller/cartesian_twist/command', TwistStamped, queue_size=10)
+        # self.cmd_pub = rospy.Publisher('/arm_controller/cartesian_twist/command', TwistStamped, queue_size=10)
 
         # TF listener
         self.tf_listener = tf.TransformListener()
