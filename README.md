@@ -92,6 +92,13 @@ We have also changed the original Fetch fingers to a adapted version of the [UMI
 <img src="./media/fingers.jpeg" height="400" alt="Deformable Fingers Image">
 </p>
 
+For easily changing the urdf model in the ROS environment we added a launch file on the `fetch_moveit_config` package. This file, [moveit.launch](./fetch_moveit_config/launch/moveit.launch), receives as input the robot urdf to load in the ROS environment, rewrites the robot_description in the system and launches moveit [move_group.launch](./fetch_moveit_config/launch/move_group.launch) from the original fetch_ros. Sample command is shown below:
+
+```Shell
+roslaunch fetch_moveit_config moveit.launch robot:=fetch_original
+```
+
+
 # fetch_ros Original Readme.md
 
 Open ROS Components for Robots from Fetch Robotics
